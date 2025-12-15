@@ -2,6 +2,23 @@ import axios from "axios";
 import User from "../models/user.js";
 import bcrypt from "bcrypt"
 import jwt from "jsonwebtoken"
+import nodemailer from "nodemailer"
+import dotenv from "dotenv"
+import OTP from "../models/otpModel.js";
+import getDesignedEmail from "../lib/emailDesigner.js";
+
+dotenv.config();
+
+const transporter = nodemailer.createTransport({
+	service: "gmail",
+	host: "smtp.gmail.com",
+	port: 587,
+	secure: false,
+	auth: {
+		user: process.env.EMAIL_USER,
+		pass: process.env.APP_PASSWORD,
+	},
+});
 
 export function createUser(req, res) {
 
@@ -46,6 +63,12 @@ export function loginUser(req, res) {
                     }
                 )
             } else {
+                if (user.isBlock) {
+                    res.status(403).json({
+                        message: "Your account has been blocked. Please contact admin.",
+                    });
+                    return;
+                }
                 const isPasswordMatching = bcrypt.compareSync(req.body.password, user.password)
                 if (isPasswordMatching) {
 
@@ -190,6 +213,12 @@ export async function googleLogin(req, res) {
             return;
         } else {
             //login the user
+            if (user.isBlock) {
+                res.status(403).json({
+                    message: "Your account has been blocked. Please contact admin.",
+                });
+                return;
+            }
             const jwtToken = jwt.sign(
                 {
                     email: user.email,
@@ -222,4 +251,161 @@ export async function googleLogin(req, res) {
         });
         return;
     }
+}
+
+export async function getAllUsers(req, res) {
+    if (!isAdmin(req)) {
+        res.status(403).json({
+            message: "Forbidden",
+        });
+        return;
+    }
+    try {
+        const users = await User.find();
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({
+            message: "Failed to get users",
+        });
+    }
+}
+
+export async function blockOrUnblockUser(req, res) {
+    console.log(req.user);
+    if (!isAdmin(req)) {
+        res.status(403).json({
+            message: "Forbidden",
+        });
+        return;
+    }
+
+    if (req.user.email === req.params.email) {
+        res.status(400).json({
+            message: "You cannot block yourself",
+        });
+        return;
+    }
+
+    try {
+        await User.updateOne(
+            {
+                email: req.params.email,
+            },
+            {
+                isBlock: req.body.isBlock,
+            }
+        );
+
+        res.json({
+            message: "User block status updated successfully",
+        });
+    } catch (err) {
+        res.status(500).json({
+            message: "Failed to block/unblock user",
+        });
+    }
+}
+
+export async function sendOTP(req, res) {
+	const email = req.params.email;
+	if (email == null) {
+		res.status(400).json({
+			message: "Email is required",
+		});
+		return;
+	}
+
+	// 100000 - 999999
+	const otp = Math.floor(100000 + Math.random() * 900000);
+
+	try {
+		const user = await User.findOne({ email: email });
+
+		const firstName = user ? user.firstName : "there";
+
+		if (user == null) {
+			res.status(404).json({
+				message: "User not found",
+			});
+			return;
+		}
+
+		await OTP.deleteMany({
+			email: email,
+		});
+
+		const newOTP = new OTP({
+			email: email,
+			otp: otp,
+		});
+		await newOTP.save();
+
+		
+
+		await transporter.sendMail({
+			from: process.env.EMAIL_USER,
+			to: email,
+			subject: "Your OTP for Password Reset",
+			text: `Hi! Your one-time passcode is ${otp}. It’s valid for 10 minutes. If you didn’t request this, ignore this email. — ${
+				"AuraCell"
+			}`,
+			html: getDesignedEmail({
+				otp,
+				firstName,
+				brandName: "AuraCell",
+				supportEmail: "support@auracell.com",
+				colors: { accent: "#1E3A8A", primary: "#FFFFFF", secondary: "#111827" },
+			}),
+		});
+
+		res.json({
+			message: "OTP sent to your email",
+		});
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({
+			message: "Failed to send OTP",
+		});
+	}
+}
+
+export async function changePasswordViaOTP(req, res) {
+	const email = req.body.email;
+	const otp = req.body.otp;
+	const newPassword = req.body.newPassword;
+	try {
+		const otpRecord = await OTP.findOne({
+			email: email,
+			otp: otp,
+		});
+
+		if (otpRecord == null) {
+			res.status(400).json({
+				message: "Invalid OTP",
+			});
+			return;
+		}
+
+		await OTP.deleteMany({
+			email: email,
+		});
+
+		const hashedPassword = bcrypt.hashSync(newPassword, 10);
+
+		await User.updateOne(
+			{
+				email: email,
+			},
+			{
+				password: hashedPassword,
+			}
+		);
+		res.json({
+			message: "Password changed successfully",
+		});
+	} catch (err) {
+		res.status(500).json({
+			message: "Failed to change password",
+		});
+	}
 }
