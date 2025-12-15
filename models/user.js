@@ -29,13 +29,13 @@ const userSchema = new mongoose.Schema(
             type : Boolean,
             default : false
         },
-        isemailVerified : {
+        isEmailVerified : {
             type : Boolean,
             default : false
         },
         image : {
             type :String,
-            default : "https://www.gravatar.com/avatar/"
+            default : "/user.png"
         }
     }
 
